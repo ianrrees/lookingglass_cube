@@ -3,7 +3,7 @@
 use gl;
 extern crate glutin;
 use cgmath;
-use cgmath::{Angle, Matrix, SquareMatrix, Matrix4, Rad, Vector4};
+use cgmath::{Angle, Point3, Matrix, SquareMatrix, Matrix4, Rad, Transform, Vector3, Vector4};
 
 use glutin::GlContext;
 
@@ -57,10 +57,13 @@ fn main() {
 
     let gl_state = gl_setup();
 
-    // Set up the projection matrix
-    // TODO actually make a projection matrix
-    let proj = Matrix4::<f32>::identity();
-    load_uniform_matrix(&gl_state, "projection".to_string(), proj);
+    let view = Matrix4::look_at(Point3::new(0.5, 0.5, 0.5), // eye
+                                Point3::new(0.0, 0.0, 0.0), // center
+                                Vector3::new(0.0, 1.0, 0.0)); // up
+    load_uniform_matrix(&gl_state, "view\0".to_string(), view);
+
+    let proj = perspective_matrix(Rad(1.0), 3840.0/2160.0, 0.1, 100.0);
+    load_uniform_matrix(&gl_state, "projection\0".to_string(), proj);
 
     let mut running = true;
     let speed = Rad(2.0); // rad/sec
@@ -92,7 +95,7 @@ fn main() {
         let theta = (speed * duration_f32).normalize();
 
         unsafe {
-            let vert_data = generate_data(theta);
+            let vert_data = generate_cube(Matrix4::<f32>::from_angle_z(theta));
             gl::BindBuffer(gl::ARRAY_BUFFER, gl_state.vb);
             gl::BufferData(gl::ARRAY_BUFFER,
                                (vert_data.len() * mem::size_of::<f32>()) as gl::types::GLsizeiptr,
@@ -117,10 +120,49 @@ fn main() {
     }
 }
 
-fn load_uniform_matrix(gl_state: &GlState, dest: String, m: Matrix4<f32>)
-{
+// /// http://medialab.di.unipi.it/web/IUM/Waterloo/node47.html
+// fn perspective_matrix(theta: Rad<f32>, aspect: f32, near: f32, far:f32) -> Matrix4<f32>{
+//     let cotangent = (theta/2.0).cot();
+//     Matrix4::new(
+//         cotangent / aspect, 0.0,       0.0,                   0.0,
+//         0.0,                cotangent, 0.0,                   0.0,
+//         0.0,                0.0,       (far+near)/(far-near), -2.0*far*near/(far-near),
+//         0.0,                0.0,       1.0,                   0.0)
+// }
+
+
+// /// https://solarianprogrammer.com/2013/05/22/opengl-101-matrices-projection-view-model/
+// fn perspective_matrix(theta: Rad<f32>, aspect: f32, near: f32, far:f32) -> Matrix4<f32>{
+//     let top = near * (theta / 2.0).tan();
+//     let bottom = -top;
+//     let right = top * aspect;
+//     let left = -right;
+
+//     Matrix4::new(
+//         2.0*near/(right-left), 0.0, (right+left)/(right-left), 0.0,
+//         0.0, 2.0*near/(top-bottom), (top+bottom)/(top-bottom), 0.0,
+//         0.0, 0.0, -(far+near)/(far-near), -2.0*far*near/(far-near),
+//         0.0, 0.0, -1.0, 0.0
+//     )
+// }
+
+/// http://davidlively.com/programming/graphics/opengl-matrices/perspective-projection/
+fn perspective_matrix(theta: Rad<f32>, aspect: f32, near: f32, far:f32) -> Matrix4<f32>{
+    let hh = near * (theta / 2.0).tan();
+    let hw = hh * aspect;
+    let depth = far - near;
+
+    Matrix4::new(
+        near/hw, 0.0, 0.0, 0.0,
+        0.0, near/hh, 0.0, 0.0,
+        0.0, 0.0, -(far+near)/depth, -1.0,
+        0.0, 0.0, -2.0*far*near/depth, 0.0,
+    )
+}
+
+fn load_uniform_matrix(gl_state: &GlState, dest: String, m: Matrix4<f32>) {
     unsafe {
-        let matrix_id =  gl::GetUniformLocation(gl_state.program, dest.as_ptr() as *const _);
+        let matrix_id = gl::GetUniformLocation(gl_state.program, dest.as_ptr() as *const _);
         gl::UniformMatrix4fv(matrix_id, 1, false as gl::types::GLboolean, m.as_ptr() as *const _);
     }
 }
@@ -174,6 +216,8 @@ fn gl_setup() -> GlState {
                                     (2 * mem::size_of::<f32>()) as *const () as *const _);
         gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
         gl::EnableVertexAttribArray(color_attrib as gl::types::GLuint);
+        gl::Enable(gl::CULL_FACE);
+        gl::CullFace(gl::BACK);
     }
 
     GlState {
@@ -182,24 +226,42 @@ fn gl_setup() -> GlState {
     }
 }
 
-fn generate_data(theta: Rad<f32>) -> Vec<f32> {
+fn generate_cube(m: Matrix4<f32>) -> Vec<f32> {
+    fn square(out: &mut Vec<f32>, v: &[Vector4<f32>], color: &[f32]) {
+        out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
+        out.extend_from_slice(&[v[1].x, v[1].y, v[1].z, color[0], color[1], color[2]]);
+        out.extend_from_slice(&[v[2].x, v[2].y, v[2].z, color[0], color[1], color[2]]);
 
-    let m = Matrix4::<f32>::from_angle_z(theta);
+        out.extend_from_slice(&[v[2].x, v[2].y, v[2].z, color[0], color[1], color[2]]);
+        out.extend_from_slice(&[v[3].x, v[3].y, v[3].z, color[0], color[1], color[2]]);
+        out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
+        // out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
+        // out.extend_from_slice(&[v[2].x, v[2].y, v[2].z, color[0], color[1], color[2]]);
+        // out.extend_from_slice(&[v[1].x, v[1].y, v[1].z, color[0], color[1], color[2]]);
 
-    let v1 = m * Vector4::new(-0.25, 0.25, -0.25, 1.0);
-    let v2 = m * Vector4::new(0.25, 0.25, -0.25, 1.0);
-    let v3 = m * Vector4::new(0.25, -0.25, -0.25, 1.0);
-    let v4 = m * Vector4::new(-0.25, -0.25, -0.25, 1.0);
+        // out.extend_from_slice(&[v[2].x, v[2].y, v[2].z, color[0], color[1], color[2]]);
+        // out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
+        // out.extend_from_slice(&[v[3].x, v[3].y, v[3].z, color[0], color[1], color[2]]);
+    }
 
-    let mut ret = Vec::with_capacity(3*6);
-    ret.extend_from_slice(&[v1.x, v1.y, v1.z,    1.0, 0.0, 0.0]);
-    ret.extend_from_slice(&[v2.x, v2.y, v2.z,    0.0, 1.0, 0.0]);
-    ret.extend_from_slice(&[v3.x, v3.y, v3.z,    0.0, 0.0, 1.0]);
+    let va = m * Vector4::new(-0.125, 0.125, -0.125, 1.0);
+    let vb = m * Vector4::new(0.125, 0.125, -0.125, 1.0);
+    let vc = m * Vector4::new(0.125, -0.125, -0.125, 1.0);
+    let vd = m * Vector4::new(-0.125, -0.125, -0.125, 1.0);
 
-    ret.extend_from_slice(&[v3.x, v3.y, v3.z,    0.0, 0.0, 1.0]);
-    ret.extend_from_slice(&[v4.x, v4.y, v4.z,    1.0, 0.0, 0.0]);
-    ret.extend_from_slice(&[v1.x, v1.y, v1.z,    1.0, 0.0, 0.0]);
+    let ve = m * Vector4::new(-0.125, 0.125, 0.125, 1.0);
+    let vf = m * Vector4::new(0.125, 0.125, 0.125, 1.0);
+    let vg = m * Vector4::new(0.125, -0.125, 0.125, 1.0);
+    let vh = m * Vector4::new(-0.125, -0.125, 0.125, 1.0);
 
+    // 6 faces, 2 triangles each, 3 verts/tri, 7 f32s per vert
+    let mut ret = Vec::with_capacity(6 * 2 * 3 * 7);
+    square(&mut ret, &[va, vb, vc, vd], &[1.0, 0.0, 0.0]);
+    square(&mut ret, &[vb, vf, vg, vc], &[1.0, 1.0, 0.0]);
+    square(&mut ret, &[vf, ve, vh, vg], &[0.0, 1.0, 0.0]);
+    square(&mut ret, &[ve, va, vd, vh], &[0.0, 1.0, 1.0]);
+    square(&mut ret, &[ve, vf, vb, va], &[0.0, 0.0, 1.0]);
+    square(&mut ret, &[vd, vc, vg, vh], &[1.0, 0.0, 1.0]);
     ret
 }
 
@@ -211,12 +273,15 @@ precision mediump float;
 attribute vec3 position;
 attribute vec3 color;
 
+uniform mat4 view;
 uniform mat4 projection;
 
 varying vec3 v_color;
 
 void main() {
-    gl_Position = projection * vec4(position, 1.0);
+    // gl_Position = projection * vec4(position, 1.0);
+    gl_Position = projection * view * vec4(position, 1.0);
+    // gl_Position = view * vec4(position, 1.0);
     // gl_Position = vec4(position, 1.0);
 
     v_color = color;
