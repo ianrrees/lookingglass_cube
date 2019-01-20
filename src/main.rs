@@ -3,7 +3,7 @@
 use gl;
 extern crate glutin;
 use cgmath;
-use cgmath::{Angle, Point3, Matrix, SquareMatrix, Matrix4, Rad, Transform, Vector3, Vector4};
+use cgmath::{Angle, Point3, Matrix, Matrix4, Rad, Vector3, Vector4};
 
 use glutin::GlContext;
 
@@ -188,16 +188,6 @@ fn gl_setup() -> GlState {
             gl::BindVertexArray(vao);
         }
 
-        let pos_attrib = gl::GetAttribLocation(program, b"position\0".as_ptr() as *const _);
-        let color_attrib = gl::GetAttribLocation(program, b"color\0".as_ptr() as *const _);
-        gl::VertexAttribPointer(pos_attrib as gl::types::GLuint, 2, gl::FLOAT, 0,
-                                    5 * mem::size_of::<f32>() as gl::types::GLsizei,
-                                    ptr::null());
-        gl::VertexAttribPointer(color_attrib as gl::types::GLuint, 3, gl::FLOAT, 0,
-                                    5 * mem::size_of::<f32>() as gl::types::GLsizei,
-                                    (2 * mem::size_of::<f32>()) as *const () as *const _);
-        gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
-        gl::EnableVertexAttribArray(color_attrib as gl::types::GLuint);
         // gl::Enable(gl::CULL_FACE);
         // gl::CullFace(gl::BACK);
         gl::Enable(gl::DEPTH_TEST);
@@ -221,6 +211,7 @@ fn generate_cube(m: Matrix4<f32>) -> Vec<f32> {
         out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
     }
 
+    // Vector4 here, just because multiplying by 4x4 matrix
     let va = m * Vector4::new(-0.125, 0.125, -0.125, 1.0);
     let vb = m * Vector4::new(0.125, 0.125, -0.125, 1.0);
     let vc = m * Vector4::new(0.125, -0.125, -0.125, 1.0);
