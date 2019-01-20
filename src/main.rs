@@ -18,6 +18,12 @@ struct GlState {
     program: u32,
 }
 
+
+// Next steps:
+//   * Figure out how to make fixed, textured, squares in right orientation for the mpv shader
+//   * Render to FBOs
+//   * Render multiple perspectives of same scene
+//   * Incorporate mpv shader
 fn main() {
     let mut events_loop = glutin::EventsLoop::new();
 
@@ -60,10 +66,10 @@ fn main() {
     let view = Matrix4::look_at(Point3::new(0.5, 0.5, 0.5), // eye
                                 Point3::new(0.0, 0.0, 0.0), // center
                                 Vector3::new(0.0, 1.0, 0.0)); // up
-    load_uniform_matrix(&gl_state, "view\0".to_string(), view);
+    load_uniform_matrix(&gl_state, "view".to_string(), view);
 
     let proj = perspective_matrix(Rad(1.0), 3840.0/2160.0, 0.1, 100.0);
-    load_uniform_matrix(&gl_state, "projection\0".to_string(), proj);
+    load_uniform_matrix(&gl_state, "projection".to_string(), proj);
 
     let mut running = true;
     let speed = Rad(2.0); // rad/sec
@@ -112,39 +118,13 @@ fn main() {
             gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
             gl::EnableVertexAttribArray(color_attrib as gl::types::GLuint);
 
-            gl::Clear(gl::COLOR_BUFFER_BIT);
+            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             gl::DrawArrays(gl::TRIANGLES, 0, vert_data.len() as i32 / 5);
         }
 
         gl_window.swap_buffers().unwrap();
     }
 }
-
-// /// http://medialab.di.unipi.it/web/IUM/Waterloo/node47.html
-// fn perspective_matrix(theta: Rad<f32>, aspect: f32, near: f32, far:f32) -> Matrix4<f32>{
-//     let cotangent = (theta/2.0).cot();
-//     Matrix4::new(
-//         cotangent / aspect, 0.0,       0.0,                   0.0,
-//         0.0,                cotangent, 0.0,                   0.0,
-//         0.0,                0.0,       (far+near)/(far-near), -2.0*far*near/(far-near),
-//         0.0,                0.0,       1.0,                   0.0)
-// }
-
-
-// /// https://solarianprogrammer.com/2013/05/22/opengl-101-matrices-projection-view-model/
-// fn perspective_matrix(theta: Rad<f32>, aspect: f32, near: f32, far:f32) -> Matrix4<f32>{
-//     let top = near * (theta / 2.0).tan();
-//     let bottom = -top;
-//     let right = top * aspect;
-//     let left = -right;
-
-//     Matrix4::new(
-//         2.0*near/(right-left), 0.0, (right+left)/(right-left), 0.0,
-//         0.0, 2.0*near/(top-bottom), (top+bottom)/(top-bottom), 0.0,
-//         0.0, 0.0, -(far+near)/(far-near), -2.0*far*near/(far-near),
-//         0.0, 0.0, -1.0, 0.0
-//     )
-// }
 
 /// http://davidlively.com/programming/graphics/opengl-matrices/perspective-projection/
 fn perspective_matrix(theta: Rad<f32>, aspect: f32, near: f32, far:f32) -> Matrix4<f32>{
@@ -153,14 +133,16 @@ fn perspective_matrix(theta: Rad<f32>, aspect: f32, near: f32, far:f32) -> Matri
     let depth = far - near;
 
     Matrix4::new(
-        near/hw, 0.0, 0.0, 0.0,
-        0.0, near/hh, 0.0, 0.0,
-        0.0, 0.0, -(far+near)/depth, -1.0,
-        0.0, 0.0, -2.0*far*near/depth, 0.0,
+        near/hw, 0.0,     0.0,                  0.0,
+        0.0,     near/hh, 0.0,                  0.0,
+        0.0,     0.0,     -(far+near)/depth,   -1.0,
+        0.0,     0.0,     -2.0*far*near/depth,  0.0,
     )
 }
 
-fn load_uniform_matrix(gl_state: &GlState, dest: String, m: Matrix4<f32>) {
+/// Loads a matrix from the main program in to a "uniform" shader matrix
+fn load_uniform_matrix(gl_state: &GlState, mut dest: String, m: Matrix4<f32>) {
+    dest.push('\0');
     unsafe {
         let matrix_id = gl::GetUniformLocation(gl_state.program, dest.as_ptr() as *const _);
         gl::UniformMatrix4fv(matrix_id, 1, false as gl::types::GLboolean, m.as_ptr() as *const _);
@@ -216,8 +198,9 @@ fn gl_setup() -> GlState {
                                     (2 * mem::size_of::<f32>()) as *const () as *const _);
         gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
         gl::EnableVertexAttribArray(color_attrib as gl::types::GLuint);
-        gl::Enable(gl::CULL_FACE);
-        gl::CullFace(gl::BACK);
+        // gl::Enable(gl::CULL_FACE);
+        // gl::CullFace(gl::BACK);
+        gl::Enable(gl::DEPTH_TEST);
     }
 
     GlState {
@@ -226,6 +209,7 @@ fn gl_setup() -> GlState {
     }
 }
 
+/// Makes a multicoloured cube 0.25 on a side, at origin transformed by m
 fn generate_cube(m: Matrix4<f32>) -> Vec<f32> {
     fn square(out: &mut Vec<f32>, v: &[Vector4<f32>], color: &[f32]) {
         out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
@@ -235,13 +219,6 @@ fn generate_cube(m: Matrix4<f32>) -> Vec<f32> {
         out.extend_from_slice(&[v[2].x, v[2].y, v[2].z, color[0], color[1], color[2]]);
         out.extend_from_slice(&[v[3].x, v[3].y, v[3].z, color[0], color[1], color[2]]);
         out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
-        // out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
-        // out.extend_from_slice(&[v[2].x, v[2].y, v[2].z, color[0], color[1], color[2]]);
-        // out.extend_from_slice(&[v[1].x, v[1].y, v[1].z, color[0], color[1], color[2]]);
-
-        // out.extend_from_slice(&[v[2].x, v[2].y, v[2].z, color[0], color[1], color[2]]);
-        // out.extend_from_slice(&[v[0].x, v[0].y, v[0].z, color[0], color[1], color[2]]);
-        // out.extend_from_slice(&[v[3].x, v[3].y, v[3].z, color[0], color[1], color[2]]);
     }
 
     let va = m * Vector4::new(-0.125, 0.125, -0.125, 1.0);
@@ -279,11 +256,7 @@ uniform mat4 projection;
 varying vec3 v_color;
 
 void main() {
-    // gl_Position = projection * vec4(position, 1.0);
     gl_Position = projection * view * vec4(position, 1.0);
-    // gl_Position = view * vec4(position, 1.0);
-    // gl_Position = vec4(position, 1.0);
-
     v_color = color;
 }
 \0";
