@@ -16,6 +16,7 @@ use std::time::Instant;
 struct GlState {
     vb : u32,
     program: u32,
+    vao: u32,
 }
 
 
@@ -61,15 +62,25 @@ fn main() {
 
     print_opengl_version();
 
-    let gl_state = gl_setup();
+    unsafe {
+        gl::ClearColor(0.40, 0.10, 0.10, 1.0);
+
+        // gl::Enable(gl::CULL_FACE);
+        // gl::CullFace(gl::BACK);
+        gl::Enable(gl::DEPTH_TEST);
+    }
+
+    let main_state = setup_main();
+    let quilt_state = setup_quilt();
+    use_gl_state(&main_state);
 
     let view = Matrix4::look_at(Point3::new(0.5, 0.5, 0.5), // eye
                                 Point3::new(0.0, 0.0, 0.0), // center
                                 Vector3::new(0.0, 1.0, 0.0)); // up
-    load_uniform_matrix(&gl_state, "view".to_string(), view);
+    load_uniform_matrix(&main_state, "view".to_string(), view);
 
     let proj = perspective_matrix(Rad(1.0), 3840.0/2160.0, 0.1, 100.0);
-    load_uniform_matrix(&gl_state, "projection".to_string(), proj);
+    load_uniform_matrix(&main_state, "projection".to_string(), proj);
 
     let mut running = true;
     let speed = Rad(2.0); // rad/sec
@@ -100,15 +111,15 @@ fn main() {
         let duration_f32 = duration.as_secs() as f32 + duration.subsec_nanos() as f32 * 1e-9;
         let theta = (speed * duration_f32).normalize();
 
+        use_gl_state(&main_state);
         unsafe {
             let vert_data = generate_cube(Matrix4::<f32>::from_angle_z(theta));
-            gl::BindBuffer(gl::ARRAY_BUFFER, gl_state.vb);
             gl::BufferData(gl::ARRAY_BUFFER,
                                (vert_data.len() * mem::size_of::<f32>()) as gl::types::GLsizeiptr,
                                vert_data.as_ptr() as *const _, gl::STREAM_DRAW);
 
-            let pos_attrib = gl::GetAttribLocation(gl_state.program, b"position\0".as_ptr() as *const _);
-            let color_attrib = gl::GetAttribLocation(gl_state.program, b"color\0".as_ptr() as *const _);
+            let pos_attrib = gl::GetAttribLocation(main_state.program, b"position\0".as_ptr() as *const _);
+            let color_attrib = gl::GetAttribLocation(main_state.program, b"color\0".as_ptr() as *const _);
             gl::VertexAttribPointer(pos_attrib as gl::types::GLuint, 3, gl::FLOAT, 0,
                                         6 * mem::size_of::<f32>() as gl::types::GLsizei,
                                         ptr::null());
@@ -121,6 +132,14 @@ fn main() {
             gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
             gl::DrawArrays(gl::TRIANGLES, 0, vert_data.len() as i32 / 5);
         }
+
+        use_gl_state(&quilt_state);
+
+        unsafe {
+            
+        }
+
+
 
         gl_window.swap_buffers().unwrap();
     }
@@ -158,44 +177,136 @@ fn print_opengl_version() {
     println!("OpenGL version {}", version);
 }
 
-fn gl_setup() -> GlState {
-    let mut vb;
-    let program;
-
+fn use_gl_state(state: &GlState) {
     unsafe {
-        gl::ClearColor(0.40, 0.10, 0.10, 1.0);
+        gl::UseProgram(state.program);
+        gl::BindBuffer(gl::ARRAY_BUFFER, state.vb);
+        gl::BindVertexArray(state.vao);
+    }
+}
 
+/// Sets up the OpenGL program for rendering a grid of textured 2D rects
+fn setup_quilt() -> GlState {
+    const VERTEX_SHADER: &'static [u8] = b"
+    #version 330
+    precision mediump float;
+
+    attribute vec3 position;
+    attribute vec2 texcoord;
+
+    varying vec2 v_texcoord;
+
+    void main() {
+        gl_Position = vec4(position, 1.0);
+        v_texcoord = texcoord;
+    }
+    \0";
+
+    const FRAGMENT_SHADER: &'static [u8] = b"
+    #version 330
+    precision mediump float;
+
+    uniform sampler2D quilt;
+
+    varying vec2 v_texcoord;
+
+    void main() {
+        gl_FragColor = texture(quilt, v_texcoord);
+    }
+    \0";
+
+    let program;
+    let mut vb;
+    let mut vao;
+    unsafe {
         let vs = gl::CreateShader(gl::VERTEX_SHADER);
-        gl::ShaderSource(vs, 1, [VS_SRC.as_ptr() as *const _].as_ptr(), ptr::null());
+        gl::ShaderSource(vs, 1, [VERTEX_SHADER.as_ptr() as *const _].as_ptr(), ptr::null());
         gl::CompileShader(vs);
 
         let fs = gl::CreateShader(gl::FRAGMENT_SHADER);
-        gl::ShaderSource(fs, 1, [FS_SRC.as_ptr() as *const _].as_ptr(), ptr::null());
+        gl::ShaderSource(fs, 1, [FRAGMENT_SHADER.as_ptr() as *const _].as_ptr(), ptr::null());
         gl::CompileShader(fs);
 
         program = gl::CreateProgram();
         gl::AttachShader(program, vs);
         gl::AttachShader(program, fs);
         gl::LinkProgram(program);
-        gl::UseProgram(program);
 
         vb = mem::uninitialized();
         gl::GenBuffers(1, &mut vb);
 
-        if gl::BindVertexArray::is_loaded() {
-            let mut vao = mem::uninitialized();
-            gl::GenVertexArrays(1, &mut vao);
-            gl::BindVertexArray(vao);
-        }
-
-        // gl::Enable(gl::CULL_FACE);
-        // gl::CullFace(gl::BACK);
-        gl::Enable(gl::DEPTH_TEST);
+        vao = mem::uninitialized();
+        gl::GenVertexArrays(1, &mut vao);
     }
 
-    GlState {
+    GlState{
         vb,
         program,
+        vao,
+    }
+}
+
+/// Returns program, vertex buffer tuple
+fn setup_main() -> GlState {
+    // Vertex shader
+    const VERTEX_SHADER: &'static [u8] = b"
+    #version 100
+    precision mediump float;
+
+    attribute vec3 position;
+    attribute vec3 color;
+
+    uniform mat4 view;
+    uniform mat4 projection;
+
+    varying vec3 v_color;
+
+    void main() {
+        gl_Position = projection * view * vec4(position, 1.0);
+        v_color = color;
+    }
+    \0";
+
+    // Fragment shader
+    const FRAGMENT_SHADER: &'static [u8] = b"
+    #version 100
+    precision mediump float;
+
+    varying vec3 v_color;
+
+    void main() {
+        gl_FragColor = vec4(v_color, 1.0);
+    }
+    \0";
+
+    let program;
+    let mut vb;
+    let mut vao;
+    unsafe {
+        let vs = gl::CreateShader(gl::VERTEX_SHADER);
+        gl::ShaderSource(vs, 1, [VERTEX_SHADER.as_ptr() as *const _].as_ptr(), ptr::null());
+        gl::CompileShader(vs);
+
+        let fs = gl::CreateShader(gl::FRAGMENT_SHADER);
+        gl::ShaderSource(fs, 1, [FRAGMENT_SHADER.as_ptr() as *const _].as_ptr(), ptr::null());
+        gl::CompileShader(fs);
+
+        program = gl::CreateProgram();
+        gl::AttachShader(program, vs);
+        gl::AttachShader(program, fs);
+        gl::LinkProgram(program);
+
+        vb = mem::uninitialized();
+        gl::GenBuffers(1, &mut vb);
+
+        vao = mem::uninitialized();
+        gl::GenVertexArrays(1, &mut vao);
+    }
+
+    GlState{
+        vb,
+        program,
+        vao,
     }
 }
 
@@ -232,34 +343,3 @@ fn generate_cube(m: Matrix4<f32>) -> Vec<f32> {
     square(&mut ret, &[vd, vc, vg, vh], &[1.0, 0.0, 1.0]);
     ret
 }
-
-// Vertex shader
-const VS_SRC: &'static [u8] = b"
-#version 100
-precision mediump float;
-
-attribute vec3 position;
-attribute vec3 color;
-
-uniform mat4 view;
-uniform mat4 projection;
-
-varying vec3 v_color;
-
-void main() {
-    gl_Position = projection * view * vec4(position, 1.0);
-    v_color = color;
-}
-\0";
-
-// Fragment shader
-const FS_SRC: &'static [u8] = b"
-#version 100
-precision mediump float;
-
-varying vec3 v_color;
-
-void main() {
-    gl_FragColor = vec4(v_color, 1.0);
-}
-\0";
