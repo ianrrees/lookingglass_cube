@@ -19,12 +19,10 @@ struct GlState {
     vao: u32,
 }
 
-
 // Next steps:
-//   * Figure out how to make fixed, textured, squares in right orientation for the mpv shader
 //   * Render to FBOs
 //   * Render multiple perspectives of same scene
-//   * Incorporate mpv shader
+//   * Update mpv shader
 fn main() {
     let mut events_loop = glutin::EventsLoop::new();
 
@@ -86,10 +84,47 @@ fn main() {
     let quilt_rows = 9;
     let quilt_verts = generate_quilt(quilt_rows, quilt_cols);
 
+    // For now, this is just a stepping stone toward rendering in to textures...
+    let tex_image1 = image::open("tex.jpg").expect("Failed to open texture image").to_rgb();
+    println!("Loaded image with dimensions {}x{}", tex_image1.width(), tex_image1.height());
+    let tex_image2 = image::open("tex2.jpg").expect("Failed to open texture image").to_rgb();
+    println!("Loaded image with dimensions {}x{}", tex_image2.width(), tex_image2.height());
+    unsafe {
+        let mut tex = mem::uninitialized();
+        gl::GenTextures(1, &mut tex);
+        gl::ActiveTexture(gl::TEXTURE0);
+        gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
+
+        gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::RGB8,
+            tex_image1.width() as i32,
+            tex_image1.height() as i32,
+            2 // Array count
+            );
+
+        gl::TexSubImage3D(gl::TEXTURE_2D_ARRAY, // GLenum target,
+            0, 0, 0, // mip level, xoffset, yoffset,
+            0, // GLint zoffset,
+            tex_image1.width() as i32, tex_image1.height() as i32, // GLsizei width, height
+            1, // GLsizei depth,
+            gl::RGB, // GLenum format,
+            gl::UNSIGNED_BYTE, // GLenum type,
+            tex_image1.into_raw().as_ptr() as *const _  // const GLvoid * data);
+        );
+
+        gl::TexSubImage3D(gl::TEXTURE_2D_ARRAY, // GLenum target,
+            0, 0, 0, // mip level, xoffset, yoffset,
+            1, // GLint zoffset,
+            tex_image2.width() as i32, tex_image2.height() as i32, // GLsizei width, height
+            1, // GLsizei depth,
+            gl::RGB, // GLenum format,
+            gl::UNSIGNED_BYTE, // GLenum type,
+            tex_image2.into_raw().as_ptr() as *const _  // const GLvoid * data);
+        );
+    }
+
     let mut running = true;
     let speed = Rad(2.0); // rad/sec
     let start = Instant::now();
-
 
     while running {
         events_loop.poll_events(|event| {
@@ -148,18 +183,17 @@ fn main() {
             let tex_attrib = gl::GetAttribLocation(quilt_state.program, b"texcoord\0".as_ptr() as *const _);
 
             gl::VertexAttribPointer(pos_attrib as gl::types::GLuint, 2, gl::FLOAT, 0,
-                4 * mem::size_of::<f32>() as gl::types::GLsizei, ptr::null());
-            gl::VertexAttribPointer(tex_attrib as gl::types::GLuint, 2, gl::FLOAT, 0,
-                4 * mem::size_of::<f32>() as gl::types::GLsizei,
+                5 * mem::size_of::<f32>() as gl::types::GLsizei, ptr::null());
+            gl::VertexAttribPointer(tex_attrib as gl::types::GLuint, 3, gl::FLOAT, 0,
+                5 * mem::size_of::<f32>() as gl::types::GLsizei,
                 (2 * mem::size_of::<f32>()) as *const () as *const _);
 
             gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
             gl::EnableVertexAttribArray(tex_attrib as gl::types::GLuint);
 
             gl::Clear(gl::DEPTH_BUFFER_BIT);
-            gl::DrawArrays(gl::TRIANGLES, 0, quilt_verts.len() as i32 / 4);
+            gl::DrawArrays(gl::TRIANGLES, 0, quilt_verts.len() as i32 / 5);
         }
-
 
         gl_window.swap_buffers().unwrap();
     }
@@ -211,10 +245,10 @@ fn setup_quilt() -> GlState {
     #version 330
     precision mediump float;
 
-    attribute vec2 position;
-    attribute vec2 texcoord;
+    in vec2 position;
+    in vec3 texcoord;
 
-    varying vec2 v_texcoord;
+    out vec3 v_texcoord;
 
     void main() {
         gl_Position = vec4(position, 0.0, 1.0);
@@ -228,9 +262,11 @@ fn setup_quilt() -> GlState {
     #version 330
     precision mediump float;
 
-    uniform sampler2D quilt_sampler;
+    uniform sampler2DArray quilt_sampler;
 
-    varying vec2 v_texcoord;
+    in vec3 v_texcoord;
+
+    out vec4 fragColor;
 
     // For a Standard Looking Glass
     const int width = 2560;
@@ -263,10 +299,13 @@ fn setup_quilt() -> GlState {
     void main() {
       float a;
       a = (v_texcoord.x + v_texcoord.y*tilt)*pitch_adjusted - center;
-      gl_FragColor.x = v_texcoord.x;//texture(quilt_sampler, quilt_map(v_texcoord, a)).x;
-      gl_FragColor.y = v_texcoord.y;//texture(quilt_sampler, quilt_map(v_texcoord, a+subp)).y;
-      gl_FragColor.z = texture(quilt_sampler, quilt_map(v_texcoord, a+2*subp)).z;
-      gl_FragColor.w = 1.0;
+
+      // gl_FragColor.x = texture(quilt_sampler, quilt_map(v_texcoord, a)).x;
+      // gl_FragColor.y = texture(quilt_sampler, quilt_map(v_texcoord, a+subp)).y;
+      // gl_FragColor.z = texture(quilt_sampler, quilt_map(v_texcoord, a+2*subp)).z;
+      // gl_FragColor.w = 1.0;
+
+      fragColor = texture(quilt_sampler, v_texcoord);
     }
     \0";
 
@@ -305,16 +344,16 @@ fn setup_quilt() -> GlState {
 fn setup_main() -> GlState {
     // Vertex shader
     const VERTEX_SHADER: &'static [u8] = b"
-    #version 100
+    #version 330
     precision mediump float;
 
-    attribute vec3 position;
-    attribute vec3 color;
+    in vec3 position;
+    in vec3 color;
 
     uniform mat4 view;
     uniform mat4 projection;
 
-    varying vec3 v_color;
+    out vec3 v_color;
 
     void main() {
         gl_Position = projection * view * vec4(position, 1.0);
@@ -324,10 +363,11 @@ fn setup_main() -> GlState {
 
     // Fragment shader
     const FRAGMENT_SHADER: &'static [u8] = b"
-    #version 100
+    #version 330
     precision mediump float;
 
-    varying vec3 v_color;
+    in vec3 v_color;
+    out vec4 fragColor;
 
     void main() {
         gl_FragColor = vec4(v_color, 1.0);
@@ -373,6 +413,7 @@ fn generate_quilt(rows: u32, cols: u32) -> Vec<f32> {
     let half_width = 1.0 / cols as f32;
     let half_height = 1.0 / rows as f32;
 
+    let mut count = 0.0;
     'row_loop:
     for row in 0..rows {
         for column in 0..cols {
@@ -380,15 +421,19 @@ fn generate_quilt(rows: u32, cols: u32) -> Vec<f32> {
             let x = -1.0 + (column * 2 + 1) as f32 * half_width;
             let y = -1.0 + (row * 2 + 1) as f32 * half_height;
 
-            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0]);
-            ret.extend_from_slice(&[x + half_width, y + half_height, 1.0, 0.0]);
-            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0]);
+            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, count]);
+            ret.extend_from_slice(&[x + half_width, y + half_height, 1.0, 0.0, count]);
+            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, count]);
 
-            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0]);
-            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0]);
-            ret.extend_from_slice(&[x - half_width, y - half_height, 0.0, 1.0]);
+            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, count]);
+            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, count]);
+            ret.extend_from_slice(&[x - half_width, y - half_height, 0.0, 1.0, count]);
 
-            break 'row_loop;  // TODO for debugging only
+            count += 1.0;
+
+            if column == 1 {
+                break 'row_loop;  // TODO for debugging only - just render one quilt square
+            }
         }
     }
 
