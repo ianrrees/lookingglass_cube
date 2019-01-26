@@ -82,9 +82,14 @@ fn main() {
     let proj = perspective_matrix(Rad(1.0), 3840.0/2160.0, 0.1, 100.0);
     load_uniform_matrix(&main_state, "projection".to_string(), proj);
 
+    let quilt_cols = 5;
+    let quilt_rows = 9;
+    let quilt_verts = generate_quilt(quilt_rows, quilt_cols);
+
     let mut running = true;
     let speed = Rad(2.0); // rad/sec
     let start = Instant::now();
+
 
     while running {
         events_loop.poll_events(|event| {
@@ -115,17 +120,16 @@ fn main() {
         unsafe {
             let vert_data = generate_cube(Matrix4::<f32>::from_angle_z(theta));
             gl::BufferData(gl::ARRAY_BUFFER,
-                               (vert_data.len() * mem::size_of::<f32>()) as gl::types::GLsizeiptr,
-                               vert_data.as_ptr() as *const _, gl::STREAM_DRAW);
+                (vert_data.len() * mem::size_of::<f32>()) as gl::types::GLsizeiptr,
+                vert_data.as_ptr() as *const _, gl::STREAM_DRAW);
 
             let pos_attrib = gl::GetAttribLocation(main_state.program, b"position\0".as_ptr() as *const _);
             let color_attrib = gl::GetAttribLocation(main_state.program, b"color\0".as_ptr() as *const _);
             gl::VertexAttribPointer(pos_attrib as gl::types::GLuint, 3, gl::FLOAT, 0,
-                                        6 * mem::size_of::<f32>() as gl::types::GLsizei,
-                                        ptr::null());
+                6 * mem::size_of::<f32>() as gl::types::GLsizei, ptr::null());
             gl::VertexAttribPointer(color_attrib as gl::types::GLuint, 3, gl::FLOAT, 0,
-                                        6 * mem::size_of::<f32>() as gl::types::GLsizei,
-                                        (3 * mem::size_of::<f32>()) as *const () as *const _);
+                6 * mem::size_of::<f32>() as gl::types::GLsizei,
+                (3 * mem::size_of::<f32>()) as *const () as *const _);
             gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
             gl::EnableVertexAttribArray(color_attrib as gl::types::GLuint);
 
@@ -134,11 +138,27 @@ fn main() {
         }
 
         use_gl_state(&quilt_state);
-
         unsafe {
-            
-        }
+            // quilt_verts contains X, Y, tex_x, tex_y
+            gl::BufferData(gl::ARRAY_BUFFER,
+                (quilt_verts.len() * mem::size_of::<f32>()) as gl::types::GLsizeiptr,
+                quilt_verts.as_ptr() as *const _, gl::STREAM_DRAW); // TODO use the less volatile type
 
+            let pos_attrib = gl::GetAttribLocation(quilt_state.program, b"position\0".as_ptr() as *const _);
+            let tex_attrib = gl::GetAttribLocation(quilt_state.program, b"texcoord\0".as_ptr() as *const _);
+
+            gl::VertexAttribPointer(pos_attrib as gl::types::GLuint, 2, gl::FLOAT, 0,
+                4 * mem::size_of::<f32>() as gl::types::GLsizei, ptr::null());
+            gl::VertexAttribPointer(tex_attrib as gl::types::GLuint, 2, gl::FLOAT, 0,
+                4 * mem::size_of::<f32>() as gl::types::GLsizei,
+                (2 * mem::size_of::<f32>()) as *const () as *const _);
+
+            gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
+            gl::EnableVertexAttribArray(tex_attrib as gl::types::GLuint);
+
+            gl::Clear(gl::DEPTH_BUFFER_BIT);
+            gl::DrawArrays(gl::TRIANGLES, 0, quilt_verts.len() as i32 / 4);
+        }
 
 
         gl_window.swap_buffers().unwrap();
@@ -191,27 +211,62 @@ fn setup_quilt() -> GlState {
     #version 330
     precision mediump float;
 
-    attribute vec3 position;
+    attribute vec2 position;
     attribute vec2 texcoord;
 
     varying vec2 v_texcoord;
 
     void main() {
-        gl_Position = vec4(position, 1.0);
+        gl_Position = vec4(position, 0.0, 1.0);
         v_texcoord = texcoord;
     }
     \0";
 
+    // TODO The algo borrowed from lonetech relies on the texture coordinate varying from 0-1 across
+    // the whole screen, but currently it's going from 0-1 across each quilt square...
     const FRAGMENT_SHADER: &'static [u8] = b"
     #version 330
     precision mediump float;
 
-    uniform sampler2D quilt;
+    uniform sampler2D quilt_sampler;
 
     varying vec2 v_texcoord;
 
+    // For a Standard Looking Glass
+    const int width = 2560;
+    const int height = 1600;
+    const int dpi = 338;
+
+    // Copy these calibration values from the EEPROM in your looking glass
+    // TODO parameterise these
+    const float slope = 5.044347763061523;
+    const float center = 0.176902174949646;
+    const float pitch = 49.81804275512695;
+
+    const float tilt = -height / (width*slope);
+    const float pitch_adjusted = pitch * width / dpi * cos(atan(1.0, slope));
+    const float subp = 1.0 / (3*width) * pitch_adjusted;
+
+    // TODO parameterise this
+    const vec2 tiles = vec2(5,9);
+
+    vec2 quilt_map(vec2 pos, float a) {
+      // Y major positive direction, X minor negative direction
+      vec2 tile = vec2(tiles.x-1,0), dir=vec2(-1,1);
+      a = fract(a)*tiles.y;
+      tile.y += dir.y*floor(a);
+      a = fract(a)*tiles.x;
+      tile.x += dir.x*floor(a);
+      return (tile+pos)/tiles;
+    }
+
     void main() {
-        gl_FragColor = texture(quilt, v_texcoord);
+      float a;
+      a = (v_texcoord.x + v_texcoord.y*tilt)*pitch_adjusted - center;
+      gl_FragColor.x = v_texcoord.x;//texture(quilt_sampler, quilt_map(v_texcoord, a)).x;
+      gl_FragColor.y = v_texcoord.y;//texture(quilt_sampler, quilt_map(v_texcoord, a+subp)).y;
+      gl_FragColor.z = texture(quilt_sampler, quilt_map(v_texcoord, a+2*subp)).z;
+      gl_FragColor.w = 1.0;
     }
     \0";
 
@@ -309,6 +364,37 @@ fn setup_main() -> GlState {
         vao,
     }
 }
+
+
+// Makes the textured 2D quilt
+fn generate_quilt(rows: u32, cols: u32) -> Vec<f32> {
+    let mut ret = Vec::new();
+
+    let half_width = 1.0 / cols as f32;
+    let half_height = 1.0 / rows as f32;
+
+    'row_loop:
+    for row in 0..rows {
+        for column in 0..cols {
+            // Compute centre of quilt "square"
+            let x = -1.0 + (column * 2 + 1) as f32 * half_width;
+            let y = -1.0 + (row * 2 + 1) as f32 * half_height;
+
+            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0]);
+            ret.extend_from_slice(&[x + half_width, y + half_height, 1.0, 0.0]);
+            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0]);
+
+            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0]);
+            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0]);
+            ret.extend_from_slice(&[x - half_width, y - half_height, 0.0, 1.0]);
+
+            break 'row_loop;  // TODO for debugging only
+        }
+    }
+
+    ret
+}
+
 
 /// Makes a multicoloured cube 0.25 on a side, at origin transformed by m
 fn generate_cube(m: Matrix4<f32>) -> Vec<f32> {
