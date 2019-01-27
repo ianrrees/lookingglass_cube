@@ -14,6 +14,7 @@ use std::ptr;
 use std::time::Instant;
 
 struct GlState {
+    framebuffer : u32,
     vb : u32,
     program: u32,
     vao: u32,
@@ -77,54 +78,53 @@ fn main() {
                                 Vector3::new(0.0, 1.0, 0.0)); // up
     load_uniform_matrix(&main_state, "view".to_string(), view);
 
-    let proj = perspective_matrix(Rad(1.0), 3840.0/2160.0, 0.1, 100.0);
+    // TODO get these from looking glass or whatever
+    let screen_width = 3840;
+    let screen_height = 2160;
+
+    let proj = perspective_matrix(Rad(1.0), screen_width as f32 / screen_height as f32, 0.1, 100.0);
     load_uniform_matrix(&main_state, "projection".to_string(), proj);
+
+    // I assume that we want an 8:5 ratio, like the overall display, with roughly 91kpx
+    let quilt_width = 320;
+    let quilt_height = 200;
 
     let quilt_cols = 5;
     let quilt_rows = 9;
     let quilt_verts = generate_quilt(quilt_rows, quilt_cols);
 
-    // For now, this is just a stepping stone toward rendering in to textures...
-    let tex_image1 = image::open("tex.jpg").expect("Failed to open texture image").to_rgb();
-    println!("Loaded image with dimensions {}x{}", tex_image1.width(), tex_image1.height());
-    let tex_image2 = image::open("tex2.jpg").expect("Failed to open texture image").to_rgb();
-    println!("Loaded image with dimensions {}x{}", tex_image2.width(), tex_image2.height());
+    let mut tex;
     unsafe {
-        let mut tex = mem::uninitialized();
+        tex = mem::uninitialized();
         gl::GenTextures(1, &mut tex);
         gl::ActiveTexture(gl::TEXTURE0);
         gl::BindTexture(gl::TEXTURE_2D_ARRAY, tex);
 
         gl::TexStorage3D(gl::TEXTURE_2D_ARRAY, 1, gl::RGB8,
-            tex_image1.width() as i32,
-            tex_image1.height() as i32,
-            2 // Array count
+            quilt_width,
+            quilt_height,
+            quilt_rows as i32 * quilt_cols as i32 // Array count
             );
 
-        gl::TexSubImage3D(gl::TEXTURE_2D_ARRAY, // GLenum target,
-            0, 0, 0, // mip level, xoffset, yoffset,
-            0, // GLint zoffset,
-            tex_image1.width() as i32, tex_image1.height() as i32, // GLsizei width, height
-            1, // GLsizei depth,
-            gl::RGB, // GLenum format,
-            gl::UNSIGNED_BYTE, // GLenum type,
-            tex_image1.into_raw().as_ptr() as *const _  // const GLvoid * data);
-        );
-
-        gl::TexSubImage3D(gl::TEXTURE_2D_ARRAY, // GLenum target,
-            0, 0, 0, // mip level, xoffset, yoffset,
-            1, // GLint zoffset,
-            tex_image2.width() as i32, tex_image2.height() as i32, // GLsizei width, height
-            1, // GLsizei depth,
-            gl::RGB, // GLenum format,
-            gl::UNSIGNED_BYTE, // GLenum type,
-            tex_image2.into_raw().as_ptr() as *const _  // const GLvoid * data);
-        );
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32); // TODO use OpenGL type instead of i32
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
     }
 
     let mut running = true;
     let speed = Rad(2.0); // rad/sec
     let start = Instant::now();
+
+
+    let mut quilt_depth_buffer;
+    unsafe {
+        // Set up a depth buffer, which we'll re-use between framebuffers
+        quilt_depth_buffer = mem::uninitialized();
+        gl::GenRenderbuffers(1, &mut quilt_depth_buffer);
+        gl::BindRenderbuffer(gl::RENDERBUFFER, quilt_depth_buffer);
+        gl::RenderbufferStorage(gl::RENDERBUFFER, gl::DEPTH_COMPONENT, quilt_width, quilt_height);
+        gl::FramebufferRenderbuffer(gl::FRAMEBUFFER, gl::DEPTH_ATTACHMENT,
+                                    gl::RENDERBUFFER, quilt_depth_buffer);
+    }
 
     while running {
         events_loop.poll_events(|event| {
@@ -152,7 +152,18 @@ fn main() {
         let theta = (speed * duration_f32).normalize();
 
         use_gl_state(&main_state);
+
         unsafe {
+            // Framebuffer stuff initially from https://www.opengl-tutorial.org/intermediate-tutorials/tutorial-14-render-to-texture/
+            gl::BindRenderbuffer(gl::RENDERBUFFER, quilt_depth_buffer);
+            gl::FramebufferRenderbuffer(gl::FRAMEBUFFER, gl::DEPTH_ATTACHMENT,
+                                        gl::RENDERBUFFER, quilt_depth_buffer);
+
+            // Seems to not be needed?
+            // Set the list of draw buffers.
+            let draw_buffer = gl::COLOR_ATTACHMENT0;
+            gl::DrawBuffers(1, &draw_buffer as *const u32); // "1" is the size of DrawBuffers
+
             let vert_data = generate_cube(Matrix4::<f32>::from_angle_z(theta));
             gl::BufferData(gl::ARRAY_BUFFER,
                 (vert_data.len() * mem::size_of::<f32>()) as gl::types::GLsizeiptr,
@@ -168,12 +179,23 @@ fn main() {
             gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
             gl::EnableVertexAttribArray(color_attrib as gl::types::GLuint);
 
-            gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-            gl::DrawArrays(gl::TRIANGLES, 0, vert_data.len() as i32 / 5);
+            gl::Viewport(0, 0, quilt_width, quilt_height);
+
+            for frame in 0..45 {
+                // Last two are mip level and layer
+                gl::FramebufferTextureLayer(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, tex, 0, frame);
+
+                gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+                gl::DrawArrays(gl::TRIANGLES, 0, vert_data.len() as i32 / 5);
+            }
         }
+
 
         use_gl_state(&quilt_state);
         unsafe {
+            // Switch back to drawing on the screen
+            gl::Viewport(0, 0, screen_width, screen_height); // Render on the whole framebuffer, complete from the lower left corner to the upper right
+
             // quilt_verts contains X, Y, tex_x, tex_y
             gl::BufferData(gl::ARRAY_BUFFER,
                 (quilt_verts.len() * mem::size_of::<f32>()) as gl::types::GLsizeiptr,
@@ -233,6 +255,7 @@ fn print_opengl_version() {
 
 fn use_gl_state(state: &GlState) {
     unsafe {
+        gl::BindFramebuffer(gl::FRAMEBUFFER, state.framebuffer);
         gl::UseProgram(state.program);
         gl::BindBuffer(gl::ARRAY_BUFFER, state.vb);
         gl::BindVertexArray(state.vao);
@@ -334,6 +357,7 @@ fn setup_quilt() -> GlState {
     }
 
     GlState{
+        framebuffer: 0, // Render the quilts to the screen
         vb,
         program,
         vao,
@@ -374,10 +398,14 @@ fn setup_main() -> GlState {
     }
     \0";
 
+    let mut framebuffer;
     let program;
     let mut vb;
     let mut vao;
     unsafe {
+        framebuffer = mem::uninitialized();
+        gl::GenFramebuffers(1, &mut framebuffer);
+
         let vs = gl::CreateShader(gl::VERTEX_SHADER);
         gl::ShaderSource(vs, 1, [VERTEX_SHADER.as_ptr() as *const _].as_ptr(), ptr::null());
         gl::CompileShader(vs);
@@ -399,6 +427,7 @@ fn setup_main() -> GlState {
     }
 
     GlState{
+        framebuffer, // Render the scene to a framebuffer bound to the appropriate texture
         vb,
         program,
         vao,
@@ -413,7 +442,7 @@ fn generate_quilt(rows: u32, cols: u32) -> Vec<f32> {
     let half_width = 1.0 / cols as f32;
     let half_height = 1.0 / rows as f32;
 
-    let mut count = 0.0;
+    let mut frame = 0.0;
     'row_loop:
     for row in 0..rows {
         for column in 0..cols {
@@ -421,19 +450,15 @@ fn generate_quilt(rows: u32, cols: u32) -> Vec<f32> {
             let x = -1.0 + (column * 2 + 1) as f32 * half_width;
             let y = -1.0 + (row * 2 + 1) as f32 * half_height;
 
-            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, count]);
-            ret.extend_from_slice(&[x + half_width, y + half_height, 1.0, 0.0, count]);
-            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, count]);
+            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, frame]);
+            ret.extend_from_slice(&[x + half_width, y + half_height, 1.0, 0.0, frame]);
+            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, frame]);
 
-            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, count]);
-            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, count]);
-            ret.extend_from_slice(&[x - half_width, y - half_height, 0.0, 1.0, count]);
+            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, frame]);
+            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, frame]);
+            ret.extend_from_slice(&[x - half_width, y - half_height, 0.0, 1.0, frame]);
 
-            count += 1.0;
-
-            if column == 1 {
-                break 'row_loop;  // TODO for debugging only - just render one quilt square
-            }
+            frame += 1.0;
         }
     }
 
