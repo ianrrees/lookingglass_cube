@@ -3,7 +3,7 @@
 use gl;
 extern crate glutin;
 use cgmath;
-use cgmath::{Angle, Point3, Matrix, Matrix4, Rad, Vector3, Vector4};
+use cgmath::{Angle, Point3, Matrix, Matrix4, Deg, Rad, Vector3, Vector4};
 
 use glutin::GlContext;
 
@@ -73,21 +73,18 @@ fn main() {
     let quilt_state = setup_quilt();
     use_gl_state(&main_state);
 
-    let view = Matrix4::look_at(Point3::new(0.5, 0.5, 0.5), // eye
-                                Point3::new(0.0, 0.0, 0.0), // center
-                                Vector3::new(0.0, 1.0, 0.0)); // up
-    load_uniform_matrix(&main_state, "view".to_string(), view);
-
     // TODO get these from looking glass or whatever
-    let screen_width = 3840;
-    let screen_height = 2160;
+    // let screen_width = 3840;
+    // let screen_height = 2160;
+    let screen_width = 2560;
+    let screen_height = 1600;
 
     let proj = perspective_matrix(Rad(1.0), screen_width as f32 / screen_height as f32, 0.1, 100.0);
     load_uniform_matrix(&main_state, "projection".to_string(), proj);
 
     // I assume that we want an 8:5 ratio, like the overall display, with roughly 91kpx
-    let quilt_width = 320;
-    let quilt_height = 200;
+    let quilt_width = 320 * 2;
+    let quilt_height = 200 * 2;
 
     let quilt_cols = 5;
     let quilt_rows = 9;
@@ -106,8 +103,10 @@ fn main() {
             quilt_rows as i32 * quilt_cols as i32 // Array count
             );
 
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32); // TODO use OpenGL type instead of i32
-        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+        // gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32); // TODO use OpenGL type instead of i32
+        // gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::NEAREST as i32);
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as i32); // TODO use OpenGL type instead of i32
+        gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as i32);
     }
 
     let mut running = true;
@@ -186,7 +185,17 @@ fn main() {
                 gl::FramebufferTextureLayer(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, tex, 0, frame);
 
                 gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
-                gl::DrawArrays(gl::TRIANGLES, 0, vert_data.len() as i32 / 5);
+
+
+                let mut view = Matrix4::look_at(Point3::new(0.25, 0.25, 0.5), // eye
+                                            Point3::new(0.0, 0.0, 0.0), // center
+                                            Vector3::new(0.0, 1.0, 0.0)); // up
+
+                view = view_for_frame(view, frame);
+
+                load_uniform_matrix(&main_state, "view".to_string(), view);
+
+                gl::DrawArrays(gl::TRIANGLES, 0, vert_data.len() as i32 / 6);
             }
         }
 
@@ -205,16 +214,16 @@ fn main() {
             let tex_attrib = gl::GetAttribLocation(quilt_state.program, b"texcoord\0".as_ptr() as *const _);
 
             gl::VertexAttribPointer(pos_attrib as gl::types::GLuint, 2, gl::FLOAT, 0,
-                5 * mem::size_of::<f32>() as gl::types::GLsizei, ptr::null());
-            gl::VertexAttribPointer(tex_attrib as gl::types::GLuint, 3, gl::FLOAT, 0,
-                5 * mem::size_of::<f32>() as gl::types::GLsizei,
+                4 * mem::size_of::<f32>() as gl::types::GLsizei, ptr::null());
+            gl::VertexAttribPointer(tex_attrib as gl::types::GLuint, 2, gl::FLOAT, 0,
+                4 * mem::size_of::<f32>() as gl::types::GLsizei,
                 (2 * mem::size_of::<f32>()) as *const () as *const _);
 
             gl::EnableVertexAttribArray(pos_attrib as gl::types::GLuint);
             gl::EnableVertexAttribArray(tex_attrib as gl::types::GLuint);
 
             gl::Clear(gl::DEPTH_BUFFER_BIT);
-            gl::DrawArrays(gl::TRIANGLES, 0, quilt_verts.len() as i32 / 5);
+            gl::DrawArrays(gl::TRIANGLES, 0, quilt_verts.len() as i32 / 4);
         }
 
         gl_window.swap_buffers().unwrap();
@@ -244,6 +253,43 @@ fn load_uniform_matrix(gl_state: &GlState, mut dest: String, m: Matrix4<f32>) {
     }
 }
 
+/// Should draw a diagram...  view is 0-indexed
+fn view_for_frame(view_initial: Matrix4<f32>, view: i32) -> Matrix4<f32> {
+    let num_views = 45;
+    let centre_view = num_views / 2;
+
+    assert!(view >= 0 && view < num_views);
+
+    // Centre view is a special case; no transform needed
+    if view == centre_view {
+        return view_initial;
+    }
+
+    let viewable_span = 40.0; // degrees
+    let view_radius = 0.5;
+
+    let rot = Matrix4::<f32>::from_angle_y(
+        Deg((centre_view - view) as f32 * viewable_span / num_views as f32));
+
+    // There's bound to be a cleaner way to do this...
+    let shift = Matrix4::new(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, view_radius,
+        0.0, 0.0, 0.0, 1.0,
+    );
+
+    let unshift = Matrix4::new(
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, -view_radius,
+        0.0, 0.0, 0.0, 1.0,
+    );
+
+    unshift * rot * shift * view_initial
+}
+
+
 /// Must be called after gl::load_with()
 fn print_opengl_version() {
     let version = unsafe {
@@ -269,9 +315,9 @@ fn setup_quilt() -> GlState {
     precision mediump float;
 
     in vec2 position;
-    in vec3 texcoord;
+    in vec2 texcoord;
 
-    out vec3 v_texcoord;
+    out vec2 v_texcoord;
 
     void main() {
         gl_Position = vec4(position, 0.0, 1.0);
@@ -287,7 +333,7 @@ fn setup_quilt() -> GlState {
 
     uniform sampler2DArray quilt_sampler;
 
-    in vec3 v_texcoord;
+    in vec2 v_texcoord;
 
     out vec4 fragColor;
 
@@ -309,26 +355,36 @@ fn setup_quilt() -> GlState {
     // TODO parameterise this
     const vec2 tiles = vec2(5,9);
 
-    vec2 quilt_map(vec2 pos, float a) {
-      // Y major positive direction, X minor negative direction
-      vec2 tile = vec2(tiles.x-1,0), dir=vec2(-1,1);
+    // (u, v, i): (u, v) within texture as normal, i is index of texture [0, 44], 0 is leftmost
+    // perspective in to scene, 22 is centre view, and 44 is rightmost. 
+    float quilt_map(float a) {
+      // Was something like:
+      // vec2 tile = vec2(tiles.x-1, 0);
+      // vec2 dir=vec2(-1,1);
+
+      // Can't decide whether this or both negative works better...
+      vec2 tile = vec2(0, 0);
+      vec2 dir=vec2(1, 1);
+
       a = fract(a)*tiles.y;
       tile.y += dir.y*floor(a);
+
       a = fract(a)*tiles.x;
       tile.x += dir.x*floor(a);
-      return (tile+pos)/tiles;
+
+      return (tile.y * tiles.x) + tile.x;
     }
 
     void main() {
       float a;
       a = (v_texcoord.x + v_texcoord.y*tilt)*pitch_adjusted - center;
 
-      // gl_FragColor.x = texture(quilt_sampler, quilt_map(v_texcoord, a)).x;
-      // gl_FragColor.y = texture(quilt_sampler, quilt_map(v_texcoord, a+subp)).y;
-      // gl_FragColor.z = texture(quilt_sampler, quilt_map(v_texcoord, a+2*subp)).z;
-      // gl_FragColor.w = 1.0;
+      fragColor.x = texture(quilt_sampler, vec3(v_texcoord, quilt_map(a))).x;
+      fragColor.y = texture(quilt_sampler, vec3(v_texcoord, quilt_map(a+subp))).y;
+      fragColor.z = texture(quilt_sampler, vec3(v_texcoord, quilt_map(a+2*subp))).z;
+      fragColor.w = 1.0;
 
-      fragColor = texture(quilt_sampler, v_texcoord);
+      // fragColor = texture(quilt_sampler, vec3(v_texcoord, 22.0));
     }
     \0";
 
@@ -436,31 +492,39 @@ fn setup_main() -> GlState {
 
 
 // Makes the textured 2D quilt
-fn generate_quilt(rows: u32, cols: u32) -> Vec<f32> {
+fn generate_quilt(_rows: u32, _cols: u32) -> Vec<f32> {
     let mut ret = Vec::new();
 
-    let half_width = 1.0 / cols as f32;
-    let half_height = 1.0 / rows as f32;
+    // let half_width = 1.0 / cols as f32;
+    // let half_height = 1.0 / rows as f32;
 
-    let mut frame = 0.0;
-    'row_loop:
-    for row in 0..rows {
-        for column in 0..cols {
-            // Compute centre of quilt "square"
-            let x = -1.0 + (column * 2 + 1) as f32 * half_width;
-            let y = -1.0 + (row * 2 + 1) as f32 * half_height;
+    // let mut frame = 0.0;
+    // 'row_loop:
+    // for row in 0..rows {
+    //     for column in 0..cols {
+    //         // Compute centre of quilt "square"
+    //         let x = -1.0 + (column * 2 + 1) as f32 * half_width;
+    //         let y = -1.0 + (row * 2 + 1) as f32 * half_height;
 
-            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, frame]);
-            ret.extend_from_slice(&[x + half_width, y + half_height, 1.0, 0.0, frame]);
-            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, frame]);
+    //         ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, frame]);
+    //         ret.extend_from_slice(&[x + half_width, y + half_height, 1.0, 0.0, frame]);
+    //         ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, frame]);
 
-            ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, frame]);
-            ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, frame]);
-            ret.extend_from_slice(&[x - half_width, y - half_height, 0.0, 1.0, frame]);
+    //         ret.extend_from_slice(&[x - half_width, y + half_height, 0.0, 0.0, frame]);
+    //         ret.extend_from_slice(&[x + half_width, y - half_height, 1.0, 1.0, frame]);
+    //         ret.extend_from_slice(&[x - half_width, y - half_height, 0.0, 1.0, frame]);
 
-            frame += 1.0;
-        }
-    }
+    //         frame += 1.0;
+    //     }
+    // }
+
+    // // TODO get rid of this function
+    ret.extend_from_slice(&[-1.0, 1.0,    0.0, 0.0]);
+    ret.extend_from_slice(&[1.0, 1.0,     1.0, 0.0]);
+    ret.extend_from_slice(&[1.0, -1.0,    1.0, 1.0]);
+    ret.extend_from_slice(&[-1.0, 1.0,    0.0, 0.0]);
+    ret.extend_from_slice(&[1.0, -1.0,    1.0, 1.0]);
+    ret.extend_from_slice(&[-1.0, -1.0,   0.0, 1.0]);
 
     ret
 }
