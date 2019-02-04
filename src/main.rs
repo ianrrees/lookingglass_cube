@@ -282,7 +282,7 @@ fn load_uniform_matrix(gl_state: &GlState, mut dest: String, m: Matrix4<f32>) {
     }
 }
 
-/// Creates a new eye point, which looks at center, but is rotated appropriately for view_num.
+/// Like look_at(), but calulates a new eye point, rotated about center appropriately for view_num.
 fn looking_glass_lookat(eye: Point3<f32>, center: Point3<f32>, up: Vector3<f32>,
                         view_num: i32) -> Matrix4<f32> {
     // Construct a vector that's coplanar with center-eye and up, and perpindicular to eye-center.
@@ -493,8 +493,8 @@ fn generate_cube(m: Matrix4<f32>) -> Vec<f32> {
     let vg = m * Vector4::new(0.125, -0.125, 0.125, 1.0);
     let vh = m * Vector4::new(-0.125, -0.125, 0.125, 1.0);
 
-    // 6 faces, 2 triangles each, 3 verts/tri, 7 f32s per vert
-    let mut ret = Vec::with_capacity(6 * 2 * 3 * 7);
+    // 6 faces, 2 triangles each, 3 verts/tri, 6 f32s per vert
+    let mut ret = Vec::with_capacity(6 * 2 * 3 * 6);
     square(&mut ret, &[va, vb, vc, vd], &[1.0, 0.0, 0.0]);
     square(&mut ret, &[vb, vf, vg, vc], &[1.0, 1.0, 0.0]);
     square(&mut ret, &[vf, ve, vh, vg], &[0.0, 1.0, 0.0]);
